@@ -16,7 +16,7 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
-# Load environment variables from .env file
+# Load environment variables
 load_dotenv()
 
 # --- AUTH & DB IMPORTS ---
@@ -28,32 +28,23 @@ from sqlalchemy import Column, Integer, String, Float, Text, DateTime
 # ==========================================
 class CandidateDB(Base):
     __tablename__ = "candidates"
-
     id = Column(Integer, primary_key=True, index=True)
     upload_date = Column(DateTime, default=datetime.utcnow)
     resume_link = Column(Text)
-    
-    # Candidate Identity
     first_name = Column(String(100))
     last_name = Column(String(100))
     email = Column(String(150))
-    
-    # Deep Analysis Data (Keeping all verified columns)
     strengths = Column(Text)
     weaknesses = Column(Text)
     risk_factor = Column(Text)
     reward_factor = Column(Text)
     overall_fit = Column(Integer)
     justification = Column(Text)
-    
-    # AI Metrics (Matches your MySQL result grid)
     tone_label = Column(String(50))
     tone_score = Column(Float)
     soft_skills = Column(Text)
     job_stability_score = Column(Float)
     grammar_mistakes = Column(Integer)
-    
-    # Metadata & Tracking
     personal_details = Column(Text)
     behavior_prediction = Column(String(100))
     entities = Column(Text)
@@ -62,10 +53,8 @@ class CandidateDB(Base):
     status = Column(String(50), default="Pending")
     role = Column(String(150))
 
-# --- NEW MODEL: JOB LISTINGS (Inserted here) ---
 class JobListingDB(Base):
     __tablename__ = "job_listings"
-
     id = Column(Integer, primary_key=True, index=True)
     role_name = Column(String(150), unique=True, nullable=False)
     jd_link = Column(Text, nullable=False)
@@ -73,56 +62,44 @@ class JobListingDB(Base):
     is_active = Column(Integer, default=1)
     created_at = Column(DateTime, default=datetime.utcnow)
 
-# Create tables
 Base.metadata.create_all(bind=engine)
 
 # ==========================================
 # 2. HYBRID EMAIL/WEBHOOK CONFIGURATION
 # ==========================================
-USE_N8N_FOR_EMAIL = False  # Set to True for n8n Webhook, False for Direct Gmail
-
+USE_N8N_FOR_EMAIL = False 
 N8N_URL = os.getenv("N8N_URL", "http://localhost:5678/webhook-test/shortlist-email-trigger")
-
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 587
 SENDER_EMAIL = os.getenv("EMAIL_USER", "pandugadharmateja05@gmail.com")
 SENDER_PASSWORD = os.getenv("EMAIL_PASSWORD", "jjir ayjt hycd eacj") 
 
 def trigger_email_notification(email, name, status):
-    """Triggers either the n8n webhook or Direct Gmail SMTP with status context."""
     if USE_N8N_FOR_EMAIL:
         try:
-            # Added "status" to payload so n8n Switch node can route
             requests.post(N8N_URL, json={"email": email, "first_name": name, "status": status})
-            print(f"n8n Webhook triggered for {email} with status {status}")
-        except Exception as e:
-            print(f"n8n trigger failed: {e}")
+        except Exception as e: print(f"n8n trigger failed: {e}")
     else:
         try:
             msg = MIMEMultipart()
             msg['From'] = SENDER_EMAIL
             msg['To'] = email
-            
-            # Logic branch for Subject and Body based on status
             if status == "Shortlisted":
                 msg['Subject'] = "Congratulations! You've been Shortlisted"
-                body = f"Hi {name},\n\nCongratulations! We have reviewed your application for the Full Stack AI Developer role and would like to move forward with your candidacy.\n\nYou have been SHORTLISTED for the next round of interviews. Our team will contact you shortly with the next steps.\n\nBest regards,\nThe Recruitment Team"
+                body = f"Hi {name},\n\nCongratulations! We have reviewed your application..."
             else:
                 msg['Subject'] = "Update regarding your application"
-                body = f"Hi {name},\n\nThank you for your interest in the Full Stack AI Developer role. After careful consideration, we have decided not to move forward with your application at this time.\n\nWe appreciate the time you took to apply and wish you the best in your search.\n\nBest regards,\nThe Recruitment Team"
-
+                body = f"Hi {name},\n\nThank you for your interest..."
             msg.attach(MIMEText(body, 'plain'))
             server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
             server.starttls()
             server.login(SENDER_EMAIL, SENDER_PASSWORD)
             server.send_message(msg)
             server.quit()
-            print(f"Direct Gmail sent to {email} (Status: {status})")
-        except Exception as e:
-            print(f"SMTP failed: {e}")
+        except Exception as e: print(f"SMTP failed: {e}")
 
 # ==========================================
-# 3. APP & AI SETUP
+# 3. APP & LAZY AI LOADING
 # ==========================================
 app = FastAPI(title="AI Recruitment Insight Engine")
 
@@ -134,15 +111,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-nlp = spacy.load("en_core_web_sm")
-sbert = SentenceTransformer("all-MiniLM-L6-v2")
-tone_classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
-sentiment_model = pipeline("text-classification", model="distilbert-base-uncased-finetuned-sst-2-english")
+# Global dictionary to store models after they load
+ai_cache = {}
 
-try:
-    tool = language_tool_python.LanguageTool('en-US')
-except:
-    tool = None
+def get_ai():
+    """Loads models only when first called to prevent Render port-scan timeouts."""
+    if not ai_cache:
+        print("--- STARTING HEAVY MODEL LOAD ---")
+        ai_cache["nlp"] = spacy.load("en_core_web_sm")
+        ai_cache["sbert"] = SentenceTransformer("all-MiniLM-L6-v2")
+        ai_cache["tone"] = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
+        ai_cache["sentiment"] = pipeline("text-classification", model="distilbert-base-uncased-finetuned-sst-2-english")
+        try:
+            ai_cache["tool"] = language_tool_python.LanguageTool('en-US')
+        except:
+            ai_cache["tool"] = None
+    return ai_cache
 
 SOFT_SKILLS = ["leadership", "communication", "teamwork", "problem solving","adaptability", "time management", "critical thinking","collaboration", "creativity", "decision making"]
 TONE_LABELS = ["professional", "confident", "formal", "casual", "neutral"]
@@ -155,6 +139,10 @@ class ResumePayload(BaseModel):
 # ==========================================
 # 4. ENDPOINTS
 # ==========================================
+
+@app.get("/")
+def health():
+    return {"status": "online"}
 
 @app.post("/register")
 def register(user: dict, db: Session = Depends(get_db)):
@@ -179,45 +167,46 @@ def get_candidates(db: Session = Depends(get_db)):
 @app.patch("/candidates/{c_id}/status")
 def update_status(c_id: int, status_update: dict, db: Session = Depends(get_db)):
     candidate = db.query(CandidateDB).filter(CandidateDB.id == c_id).first()
-    if not candidate:
-        raise HTTPException(status_code=404, detail="Candidate not found")
+    if not candidate: raise HTTPException(status_code=404, detail="Candidate not found")
     new_status = status_update.get('status', 'Pending')
     candidate.status = new_status
     db.commit()
-
-    # TRIGGER NOTIFICATION FOR BOTH SHORTLISTED AND REJECTED
     if new_status in ["Shortlisted", "Rejected"]:
         trigger_email_notification(candidate.email, candidate.first_name, new_status)
-
     return {"message": f"Updated to {candidate.status}"}
 
 @app.get("/my-application/{email}")
 def get_my_application_status(email: str, db: Session = Depends(get_db)):
     application = db.query(CandidateDB).filter(CandidateDB.email == email).order_by(CandidateDB.upload_date.desc()).first()
-    if not application:
-        raise HTTPException(status_code=404, detail="No application found")
+    if not application: raise HTTPException(status_code=404, detail="No application found")
     return {"first_name": application.first_name, "status": application.status, 
             "date": application.upload_date, "fit_score": application.overall_fit,"role": application.role}
 
 @app.post("/process")
 def process_resume(data: ResumePayload):
+    # Trigger lazy loading here
+    ai = get_ai()
+    
     text = data.resume_text[:2000]
-    tone_result = tone_classifier(text, TONE_LABELS)
+    tone_result = ai["tone"](text, TONE_LABELS)
     found_soft_skills = [skill for skill in SOFT_SKILLS if skill.lower() in text.lower()]
     company_mentions = re.findall(r"(Pvt|Ltd|Inc|LLC|Company)", text)
     stability = "Low" if len(company_mentions) >= 4 else "Moderate" if len(company_mentions) >= 2 else "High"
+    
     grammar_errors = 0
-    if tool:
-        grammar_matches = tool.check(text)
+    if ai["tool"]:
+        grammar_matches = ai["tool"].check(text)
         grammar_errors = len(grammar_matches)
-    doc = nlp(text)
+        
+    doc = ai["nlp"](text)
     personal_details = {"names": [], "organizations": [], "locations": []}
     for ent in doc.ents:
         if ent.label_ == "PERSON": personal_details["names"].append(ent.text)
         elif ent.label_ == "ORG": personal_details["organizations"].append(ent.text)
         elif ent.label_ == "GPE": personal_details["locations"].append(ent.text)
-    behavior_result = tone_classifier(text, BEHAVIOR_LABELS)
-    sentiment = sentiment_model(text, truncation=True, max_length=512)[0]
+        
+    behavior_result = ai["tone"](text, BEHAVIOR_LABELS)
+    sentiment = ai["sentiment"](text, truncation=True, max_length=512)[0]
 
     return {
         "candidate_id": data.candidate_id,
@@ -231,26 +220,280 @@ def process_resume(data: ResumePayload):
         "processed_at": datetime.utcnow().isoformat()
     }
 
-# --- NEW ENDPOINTS: JOBS (Inserted here) ---
 @app.post("/jobs")
 def add_job(job_data: dict, db: Session = Depends(get_db)):
-    """Recruiter posts a new job listing to the database."""
     if db.query(JobListingDB).filter(JobListingDB.role_name == job_data['role_name']).first():
         raise HTTPException(status_code=400, detail="Role already exists")
-    
-    new_job = JobListingDB(
-        role_name=job_data['role_name'],
-        jd_link=job_data['jd_link'],
-        keywords=job_data['keywords']
-    )
-    db.add(new_job)
-    db.commit()
+    new_job = JobListingDB(role_name=job_data['role_name'], jd_link=job_data['jd_link'], keywords=job_data['keywords'])
+    db.add(new_job); db.commit()
     return {"message": "Job posted successfully"}
 
 @app.get("/jobs")
 def get_jobs(db: Session = Depends(get_db)):
-    """Fetches all active job listings for the Applicant Portal."""
     return db.query(JobListingDB).filter(JobListingDB.is_active == 1).all()
+
+# Ensure the app binds to the correct port for Render
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
+
+
+
+
+# import os
+# from dotenv import load_dotenv
+# from fastapi import FastAPI, Depends, HTTPException
+# from fastapi.middleware.cors import CORSMiddleware
+# from pydantic import BaseModel
+# from typing import List, Optional
+# from datetime import datetime
+# import spacy
+# import re
+# import language_tool_python
+# from sentence_transformers import SentenceTransformer
+# from transformers import pipeline
+# from sqlalchemy.orm import Session
+# import requests 
+# import smtplib 
+# from email.mime.text import MIMEText
+# from email.mime.multipart import MIMEMultipart
+
+# # Load environment variables from .env file
+# load_dotenv()
+
+# # --- AUTH & DB IMPORTS ---
+# from auth import UserDB, hash_password, verify_password, Base, engine, get_db
+# from sqlalchemy import Column, Integer, String, Float, Text, DateTime
+
+# # ==========================================
+# # 1. DATABASE MODELS (Strict Sync with MySQL)
+# # ==========================================
+# class CandidateDB(Base):
+#     __tablename__ = "candidates"
+
+#     id = Column(Integer, primary_key=True, index=True)
+#     upload_date = Column(DateTime, default=datetime.utcnow)
+#     resume_link = Column(Text)
+    
+#     # Candidate Identity
+#     first_name = Column(String(100))
+#     last_name = Column(String(100))
+#     email = Column(String(150))
+    
+#     # Deep Analysis Data (Keeping all verified columns)
+#     strengths = Column(Text)
+#     weaknesses = Column(Text)
+#     risk_factor = Column(Text)
+#     reward_factor = Column(Text)
+#     overall_fit = Column(Integer)
+#     justification = Column(Text)
+    
+#     # AI Metrics (Matches your MySQL result grid)
+#     tone_label = Column(String(50))
+#     tone_score = Column(Float)
+#     soft_skills = Column(Text)
+#     job_stability_score = Column(Float)
+#     grammar_mistakes = Column(Integer)
+    
+#     # Metadata & Tracking
+#     personal_details = Column(Text)
+#     behavior_prediction = Column(String(100))
+#     entities = Column(Text)
+#     vector_size = Column(Integer)
+#     nlp_timestamp = Column(DateTime, default=datetime.utcnow)
+#     status = Column(String(50), default="Pending")
+#     role = Column(String(150))
+
+# # --- NEW MODEL: JOB LISTINGS (Inserted here) ---
+# class JobListingDB(Base):
+#     __tablename__ = "job_listings"
+
+#     id = Column(Integer, primary_key=True, index=True)
+#     role_name = Column(String(150), unique=True, nullable=False)
+#     jd_link = Column(Text, nullable=False)
+#     keywords = Column(Text)
+#     is_active = Column(Integer, default=1)
+#     created_at = Column(DateTime, default=datetime.utcnow)
+
+# # Create tables
+# Base.metadata.create_all(bind=engine)
+
+# # ==========================================
+# # 2. HYBRID EMAIL/WEBHOOK CONFIGURATION
+# # ==========================================
+# USE_N8N_FOR_EMAIL = False  # Set to True for n8n Webhook, False for Direct Gmail
+
+# N8N_URL = os.getenv("N8N_URL", "http://localhost:5678/webhook-test/shortlist-email-trigger")
+
+# SMTP_SERVER = "smtp.gmail.com"
+# SMTP_PORT = 587
+# SENDER_EMAIL = os.getenv("EMAIL_USER", "pandugadharmateja05@gmail.com")
+# SENDER_PASSWORD = os.getenv("EMAIL_PASSWORD", "jjir ayjt hycd eacj") 
+
+# def trigger_email_notification(email, name, status):
+#     """Triggers either the n8n webhook or Direct Gmail SMTP with status context."""
+#     if USE_N8N_FOR_EMAIL:
+#         try:
+#             # Added "status" to payload so n8n Switch node can route
+#             requests.post(N8N_URL, json={"email": email, "first_name": name, "status": status})
+#             print(f"n8n Webhook triggered for {email} with status {status}")
+#         except Exception as e:
+#             print(f"n8n trigger failed: {e}")
+#     else:
+#         try:
+#             msg = MIMEMultipart()
+#             msg['From'] = SENDER_EMAIL
+#             msg['To'] = email
+            
+#             # Logic branch for Subject and Body based on status
+#             if status == "Shortlisted":
+#                 msg['Subject'] = "Congratulations! You've been Shortlisted"
+#                 body = f"Hi {name},\n\nCongratulations! We have reviewed your application for the Full Stack AI Developer role and would like to move forward with your candidacy.\n\nYou have been SHORTLISTED for the next round of interviews. Our team will contact you shortly with the next steps.\n\nBest regards,\nThe Recruitment Team"
+#             else:
+#                 msg['Subject'] = "Update regarding your application"
+#                 body = f"Hi {name},\n\nThank you for your interest in the Full Stack AI Developer role. After careful consideration, we have decided not to move forward with your application at this time.\n\nWe appreciate the time you took to apply and wish you the best in your search.\n\nBest regards,\nThe Recruitment Team"
+
+#             msg.attach(MIMEText(body, 'plain'))
+#             server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+#             server.starttls()
+#             server.login(SENDER_EMAIL, SENDER_PASSWORD)
+#             server.send_message(msg)
+#             server.quit()
+#             print(f"Direct Gmail sent to {email} (Status: {status})")
+#         except Exception as e:
+#             print(f"SMTP failed: {e}")
+
+# # ==========================================
+# # 3. APP & AI SETUP
+# # ==========================================
+# app = FastAPI(title="AI Recruitment Insight Engine")
+
+# app.add_middleware(
+#     CORSMiddleware,
+#     allow_origins=["*"], 
+#     allow_credentials=True,
+#     allow_methods=["*"],
+#     allow_headers=["*"],
+# )
+
+# nlp = spacy.load("en_core_web_sm")
+# sbert = SentenceTransformer("all-MiniLM-L6-v2")
+# tone_classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
+# sentiment_model = pipeline("text-classification", model="distilbert-base-uncased-finetuned-sst-2-english")
+
+# try:
+#     tool = language_tool_python.LanguageTool('en-US')
+# except:
+#     tool = None
+
+# SOFT_SKILLS = ["leadership", "communication", "teamwork", "problem solving","adaptability", "time management", "critical thinking","collaboration", "creativity", "decision making"]
+# TONE_LABELS = ["professional", "confident", "formal", "casual", "neutral"]
+# BEHAVIOR_LABELS = ["team player", "independent worker", "leader", "innovative","analytical thinker", "adaptable", "detail-oriented", "proactive"]
+
+# class ResumePayload(BaseModel):
+#     candidate_id: str
+#     resume_text: str
+
+# # ==========================================
+# # 4. ENDPOINTS
+# # ==========================================
+
+# @app.post("/register")
+# def register(user: dict, db: Session = Depends(get_db)):
+#     if db.query(UserDB).filter(UserDB.email == user['email']).first():
+#         raise HTTPException(status_code=400, detail="Email already registered")
+#     new_user = UserDB(full_name=user.get('full_name'), email=user['email'], 
+#                       password=hash_password(user['password']), role=user.get('role', 'applicant'))
+#     db.add(new_user); db.commit()
+#     return {"message": "User created successfully"}
+
+# @app.post("/login")
+# def login(data: dict, db: Session = Depends(get_db)):
+#     user = db.query(UserDB).filter(UserDB.email == data['email']).first()
+#     if not user or not verify_password(data['password'], user.password):
+#         raise HTTPException(status_code=401, detail="Invalid credentials")
+#     return {"id": user.id, "name": user.full_name, "role": user.role, "email": user.email}
+
+# @app.get("/candidates/")
+# def get_candidates(db: Session = Depends(get_db)):
+#     return db.query(CandidateDB).order_by(CandidateDB.upload_date.desc()).all()
+
+# @app.patch("/candidates/{c_id}/status")
+# def update_status(c_id: int, status_update: dict, db: Session = Depends(get_db)):
+#     candidate = db.query(CandidateDB).filter(CandidateDB.id == c_id).first()
+#     if not candidate:
+#         raise HTTPException(status_code=404, detail="Candidate not found")
+#     new_status = status_update.get('status', 'Pending')
+#     candidate.status = new_status
+#     db.commit()
+
+#     # TRIGGER NOTIFICATION FOR BOTH SHORTLISTED AND REJECTED
+#     if new_status in ["Shortlisted", "Rejected"]:
+#         trigger_email_notification(candidate.email, candidate.first_name, new_status)
+
+#     return {"message": f"Updated to {candidate.status}"}
+
+# @app.get("/my-application/{email}")
+# def get_my_application_status(email: str, db: Session = Depends(get_db)):
+#     application = db.query(CandidateDB).filter(CandidateDB.email == email).order_by(CandidateDB.upload_date.desc()).first()
+#     if not application:
+#         raise HTTPException(status_code=404, detail="No application found")
+#     return {"first_name": application.first_name, "status": application.status, 
+#             "date": application.upload_date, "fit_score": application.overall_fit,"role": application.role}
+
+# @app.post("/process")
+# def process_resume(data: ResumePayload):
+#     text = data.resume_text[:2000]
+#     tone_result = tone_classifier(text, TONE_LABELS)
+#     found_soft_skills = [skill for skill in SOFT_SKILLS if skill.lower() in text.lower()]
+#     company_mentions = re.findall(r"(Pvt|Ltd|Inc|LLC|Company)", text)
+#     stability = "Low" if len(company_mentions) >= 4 else "Moderate" if len(company_mentions) >= 2 else "High"
+#     grammar_errors = 0
+#     if tool:
+#         grammar_matches = tool.check(text)
+#         grammar_errors = len(grammar_matches)
+#     doc = nlp(text)
+#     personal_details = {"names": [], "organizations": [], "locations": []}
+#     for ent in doc.ents:
+#         if ent.label_ == "PERSON": personal_details["names"].append(ent.text)
+#         elif ent.label_ == "ORG": personal_details["organizations"].append(ent.text)
+#         elif ent.label_ == "GPE": personal_details["locations"].append(ent.text)
+#     behavior_result = tone_classifier(text, BEHAVIOR_LABELS)
+#     sentiment = sentiment_model(text, truncation=True, max_length=512)[0]
+
+#     return {
+#         "candidate_id": data.candidate_id,
+#         "tone": {"label": tone_result["labels"][0], "confidence": round(float(tone_result["scores"][0]), 3)},
+#         "soft_skills": ", ".join(found_soft_skills),
+#         "job_stability": stability,
+#         "grammar": {"error_count": grammar_errors},
+#         "personal_details": personal_details,
+#         "behavior_profile": {"type": behavior_result["labels"][0]},
+#         "sentiment": sentiment,
+#         "processed_at": datetime.utcnow().isoformat()
+#     }
+
+# # --- NEW ENDPOINTS: JOBS (Inserted here) ---
+# @app.post("/jobs")
+# def add_job(job_data: dict, db: Session = Depends(get_db)):
+#     """Recruiter posts a new job listing to the database."""
+#     if db.query(JobListingDB).filter(JobListingDB.role_name == job_data['role_name']).first():
+#         raise HTTPException(status_code=400, detail="Role already exists")
+    
+#     new_job = JobListingDB(
+#         role_name=job_data['role_name'],
+#         jd_link=job_data['jd_link'],
+#         keywords=job_data['keywords']
+#     )
+#     db.add(new_job)
+#     db.commit()
+#     return {"message": "Job posted successfully"}
+
+# @app.get("/jobs")
+# def get_jobs(db: Session = Depends(get_db)):
+#     """Fetches all active job listings for the Applicant Portal."""
+#     return db.query(JobListingDB).filter(JobListingDB.is_active == 1).all()
 
 
 
