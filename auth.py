@@ -29,8 +29,11 @@ class UserDB(Base):
 # Using Bcrypt for industry-standard password hashing
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-def hash_password(password: str):
-    """Encodes a plain text password into a secure hash."""
+# def hash_password(password: str):
+#     """Encodes a plain text password into a secure hash."""
+#     return pwd_context.hash(password)
+def hash_password(password):
+    password = password[:72]   # bcrypt limit fix
     return pwd_context.hash(password)
 
 def verify_password(plain_password, hashed_password):
