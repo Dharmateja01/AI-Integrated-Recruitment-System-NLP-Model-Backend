@@ -18,7 +18,7 @@ from email.mime.multipart import MIMEMultipart
 
 # Load environment variables
 load_dotenv()
-
+#web: uvicorn app:app --host 0.0.0.0 --port $PORT
 # --- AUTH & DB IMPORTS ---
 from auth import UserDB, hash_password, verify_password, Base, engine, get_db
 from sqlalchemy import Column, Integer, String, Float, Text, DateTime
@@ -235,7 +235,7 @@ def get_jobs(db: Session = Depends(get_db)):
 # Ensure the app binds to the correct port for Render
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("PORT", 10000))
+    port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
 
 
